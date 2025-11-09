@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>EPRA EER SYSTEM - ADMIN</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjs/lib/browser/math.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jstat/1.9.5/jstat.min.js"></script>
+
+  <style>
+    .small-input { max-width:120px; display:inline-block; }
+    .category-title { margin-top: 1rem; font-weight:bold; }
+    #tablesContainer table th, #tablesContainer table td { min-width: 80px; text-align:center; }
+    #tablesContainer .form-control.data-input { min-width: 80px; padding: 2px 6px; text-align: right; }
+    #tablesContainer .form-control.facility-name { min-width: 140px; }
+    #tablesContainer table thead th { position: sticky; top: 0; background: #f8f9fa; z-index: 2; }
+  </style>
+</head>
+<body class="p-3 bg-light">
+  <div class="container-fluid">
+    <h2 class="text-center mb-4">EPRA EER SYSTEM - ADMIN</h2>
+
+    <!-- Admin Controls -->
+    <div class="card p-3 mb-3">
+      <h5>ADMIN CONTROLS</h5>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm-2">
+          <label class="form-label">No. of Facilities</label>
+          <input type="number" id="facilityCount" value="3" min="1" class="form-control">
+        </div>
+        <div class="col-sm-10 d-flex flex-wrap gap-2">
+          <button class="btn btn-primary mt-2" onclick="generateTables()">Generate Tables</button>
+          <input type="file" id="adminExcelUpload" class="form-control mt-2 w-auto" accept=".xlsx,.xls">
+          <button class="btn btn-info mt-2" onclick="processAdminExcel()">Process Excel</button>
+          <button class="btn btn-success mt-2" onclick="displaySummary()">Generate Summary</button>
+          <button id="regressBtn" class="btn btn-warning mt-2" style="display:none;" onclick="runOLSRegression()">Run Regression</button>
+          <button class="btn btn-secondary mt-2" onclick="downloadResults()">Download Excel</button>
+          <button class="btn btn-danger mt-2" onclick="resetAdmin()">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <!--Tables -->
+
+    <div id="tablesContainer" class="table-wrap"></div>
+    <div class="table-wrap mt-3">
+      <h5>Monthly Summary</h5>
+      <div id="summaryOutput"></div>
+    </div>
+
+    <div class="table-wrap mt-3">
+      <h5>Regression Output</h5>
+      <div id="regressionOutput"></div>
+    </div>
+
+    <div class="table-wrap mt-3">
+      <h5>EER Summary</h5>
+      <label>Cutoff EER:</label>
+      <input type="number" id="cutoffEER" class="form-control small-input mb-2" step="0.01" value="0.9">
+      <button class="btn btn-success mb-2" onclick="applyCutoff()">Apply Cutoff</button>
+      <div id="eerSummary"></div>
+    </div>
+
+    <div class="table-wrap mt-3">
+      <h5>Possible Savings / Credits</h5>
+      <div id="savingsTable"></div>
+    </div>
+
+    <div class="table-wrap mt-3">
+      <h5>Ogive Chart</h5>
+      <canvas id="ogiveChart" height="200"></canvas>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    function parseCell(v){ if(v===null||v===undefined)return null; if(typeof v==='number')return Number.isFinite(v)?v:null;
+      const s=String(v).trim(); if(s==='')return null; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:null; }
+    function sumNonNull(arr){ return arr.reduce((s,x)=>s+(x===null?0:x),0); }
+    function avgNonNull(arr){ const vals=arr.filter(x=>x!==null); return vals.length?(vals.reduce((a,b)=>a+b,0)/vals.length):null; }
+
+    const categories=[{name:'Energy',type:'sum'},{name:'Production',type:'sum'},{name:'Weather1',type:'avg'},{name:'Weather2',type:'avg'}];
+    let unifiedSummary=[], regressionCoeffs=null, ogiveChart=null, lastEerList=[], lastSavingsData=[];
+
+    function generateTables(){
+      const container=document.getElementById('tablesContainer'); container.innerHTML='';
+      const facilityCount=parseInt(document.getElementById('facilityCount').value)||0;
+      categories.forEach(cat=>{
+        const title=document.createElement('div'); title.className='category-title'; title.innerText=cat.name; container.appendChild(title);
+        const table=document.createElement('table'); table.className='table table-bordered table-sm table-striped'; table.dataset.category=cat.name;
+        const thead=document.createElement('thead'); const tr=document.createElement('tr'); tr.innerHTML='<th>Facility</th>';
+        for(let m=1;m<=24;m++) tr.innerHTML+=`<th>${m}</th>`; thead.appendChild(tr); table.appendChild(thead);
+        const tbody=document.createElement('tbody');
+        for(let f=1;f<=facilityCount;f++){
+          const row=document.createElement('tr'); row.innerHTML=`<td><input type="text" class="form-control facility-name"></td>`;
+          for(let m=1;m<=24;m++) row.innerHTML+=`<td><input type="text" class="form-control data-input"></td>`; tbody.appendChild(row);
+        }
+        table.appendChild(tbody); container.appendChild(table);
+      });
+      document.getElementById('regressBtn').style.display='none';
+    }
+
+    function processAdminExcel(){
+      const fileInput=document.getElementById('adminExcelUpload');
+      if(!fileInput.files.length)return alert('Select an Excel file first.');
+      const file=fileInput.files[0]; const reader=new FileReader();
+      reader.onload=(e)=>{
+        try{
+          const data=new Uint8Array(e.target.result); const wb=XLSX.read(data,{type:'array'});
+          const sheet=wb.Sheets[wb.SheetNames[0]]; const grid=XLSX.utils.sheet_to_json(sheet,{header:1});
+          if(grid.length<2)return alert('Excel empty or invalid.');
+          let facilityCount=0; for(let r=1;r<grid.length;r++){ if(grid[r]&&grid[r][0])facilityCount++; }
+          document.getElementById('facilityCount').value=facilityCount; generateTables();
+          const tables={}; document.querySelectorAll('#tablesContainer table').forEach(t=>tables[t.dataset.category]=t);
+          let rowIndex=0; for(let r=1;r<grid.length;r++){ const row=grid[r]; if(!row||!row[0])continue; const fname=String(row[0]).trim();
+            categories.forEach((cat,ci)=>{ const tr=tables[cat.name].querySelectorAll('tbody tr')[rowIndex]; const inputs=tr.querySelectorAll('td input');
+              inputs[0].value=fname; for(let m=0;m<24;m++){ const val=parseCell(row[1+ci*24+m]); inputs[m+1].value=val??''; }});
+            rowIndex++; }
+          alert('Excel processed successfully.');
+        }catch(err){ alert('Error: '+err.message); }
+      }; reader.readAsArrayBuffer(file);
+    }
+
+    function displaySummary(){
+      unifiedSummary=[]; const tables={}; document.querySelectorAll('#tablesContainer table').forEach(t=>tables[t.dataset.category]=t);
+      const facilityMap=new Map(); categories.forEach(cat=>{
+        const tbl=tables[cat.name]; if(!tbl)return;
+        tbl.querySelectorAll('tbody tr').forEach(row=>{
+          const inputs=row.querySelectorAll('td input'); const fname=inputs[0].value.trim(); if(!fname)return;
+          if(!facilityMap.has(fname))facilityMap.set(fname,{facility:fname,Energy:Array(24).fill(null),Production:Array(24).fill(null),Weather1:Array(24).fill(null),Weather2:Array(24).fill(null)});
+          const obj=facilityMap.get(fname); for(let m=1;m<=24;m++){ const val=parseCell(inputs[m].value); if(val!==null)obj[cat.name][m-1]=val; }
+        });
+      });
+      unifiedSummary=Array.from(facilityMap.values()); renderSummary(unifiedSummary);
+      document.getElementById('regressBtn').style.display='inline-block';
+    }
+
+    function renderSummary(list){
+      let html='<table class="table table-bordered table-sm"><thead><tr><th>Facility</th><th>Total Energy</th><th>Total Production</th><th>Avg Weather1</th><th>Avg Weather2</th></tr></thead><tbody>';
+      list.forEach(f=>{
+        html+=`<tr><td>${f.facility}</td><td>${sumNonNull(f.Energy).toFixed(2)}</td><td>${sumNonNull(f.Production).toFixed(2)}</td><td>${avgNonNull(f.Weather1)?.toFixed(2)||'-'}</td><td>${avgNonNull(f.Weather2)?.toFixed(2)||'-'}</td></tr>`;
+      });
+      html+='</tbody></table>'; document.getElementById('summaryOutput').innerHTML=html;
+    }
+
+    function runOLSRegression(){
+      if(!unifiedSummary.length)return alert('Generate summary first.');
+      const X=[],Y=[]; unifiedSummary.forEach(f=>{ for(let i=0;i<24;i++){ const e=f.Energy[i],p=f.Production[i],w1=f.Weather1[i],w2=f.Weather2[i];
+        if(e!==null&&p!==null&&w1!==null&&w2!==null){ X.push([1,p,w1,w2]); Y.push(e); }}}); if(Y.length<5)return alert('Not enough data.');
+      const Xt=math.transpose(X), XtX=math.multiply(Xt,X), XtXinv=math.inv(XtX), XtY=math.multiply(Xt,Y);
+      const beta=math.multiply(XtXinv,XtY); regressionCoeffs=beta;
+      const Yhat=X.map(r=>math.dot(r,beta)); const residuals=Y.map((y,i)=>y-Yhat[i]); const N=Y.length,p=X[0].length;
+      const residVar=residuals.reduce((s,r)=>s+r*r,0)/(N-p); const se=math.diag(XtXinv).map(v=>Math.sqrt(v*residVar));
+      const tStats=beta.map((b,i)=>b/se[i]); const pVals=tStats.map(t=>2*(1-jStat.studentt.cdf(Math.abs(t),N-p)));
+      const Ymean=Y.reduce((a,b)=>a+b,0)/N; const SSres=residuals.reduce((s,r)=>s+r*r,0); const SStot=Y.reduce((s,y)=>s+(y-Ymean)**2,0);
+      const R2=1-SSres/SStot, adjR2=1-(1-R2)*(N-1)/(N-p);
+      let html='<table class="table table-bordered table-sm"><thead><tr><th>Coeff</th><th>Estimate</th><th>StdErr</th><th>t</th><th>p</th></tr></thead><tbody>';
+      ['Intercept','Production','Weather1','Weather2'].forEach((n,i)=>{ html+=`<tr><td>${n}</td><td>${beta[i].toFixed(4)}</td><td>${se[i].toFixed(4)}</td><td>${tStats[i].toFixed(3)}</td><td>${pVals[i].toFixed(4)}</td></tr>`; });
+      html+=`</tbody></table><p><strong>R²:</strong> ${R2.toFixed(4)} | <strong>Adj R²:</strong> ${adjR2.toFixed(4)}</p>`;
+      document.getElementById('regressionOutput').innerHTML=html; renderEERSummary();
+    }
+
+    function renderEERSummary(){
+      if(!unifiedSummary||!regressionCoeffs)return;
+      const cutoff=parseFloat(document.getElementById('cutoffEER').value)||0.9;
+      const eerList=[]; let html='<table class="table table-bordered table-sm"><thead><tr><th>Facility</th><th>Total Energy</th><th>Total Production</th><th>Actual EUI</th><th>Predicted EUI</th><th>EER</th><th>New EUI</th></tr></thead><tbody>';
+      unifiedSummary.forEach(f=>{
+        const totalE=sumNonNull(f.Energy), totalP=sumNonNull(f.Production);
+        const actualEUI=totalP>0?totalE/totalP:null;
+        const predE=f.Production.map(p=>math.dot([1,p,avgNonNull(f.Weather1)||0,avgNonNull(f.Weather2)||0],regressionCoeffs));
+        const totalPred=sumNonNull(predE); const predictedEUI=totalP>0?totalPred/totalP:null;
+        const eer=(actualEUI&&predictedEUI)?actualEUI/predictedEUI:null; const newEUI=predictedEUI?cutoff*predictedEUI:null;
+        eerList.push({facility:f.facility,eer}); html+=`<tr><td>${f.facility}</td><td>${totalE.toFixed(2)}</td><td>${totalP.toFixed(2)}</td><td>${actualEUI?.toFixed(4)||'-'}</td><td>${predictedEUI?.toFixed(4)||'-'}</td><td>${eer?.toFixed(4)||'-'}</td><td>${newEUI?.toFixed(4)||'-'}</td></tr>`;
+      });
+      html+='</tbody></table>'; document.getElementById('eerSummary').innerHTML=html;
+      lastEerList=eerList; renderPossibleSavings(cutoff); renderOgive(eerList);
+    }
+
+    function renderPossibleSavings(cutoff){
+      let html='<table class="table table-bordered table-sm"><thead><tr><th>Facility</th><th>Old EER</th><th>New EER</th><th>Production</th><th>Possible Savings</th></tr></thead><tbody>';
+      const data=[]; unifiedSummary.forEach(f=>{
+        const totalE=sumNonNull(f.Energy), totalP=sumNonNull(f.Production);
+        const actualEUI=totalE/totalP; const newEUI=cutoff*actualEUI; const savings=(actualEUI-newEUI)*totalP;
+        html+=`<tr><td>${f.facility}</td><td>${actualEUI.toFixed(3)}</td><td>${newEUI.toFixed(3)}</td><td>${totalP.toFixed(1)}</td><td>${savings.toFixed(2)}</td></tr>`;
+        data.push({Facility:f.facility,Old_EER:actualEUI,New_EER:newEUI,Production:totalP,Possible_Savings:savings});
+      });
+      html+='</tbody></table>'; document.getElementById('savingsTable').innerHTML=html;
+      lastSavingsData=data;
+    }
+
+    function renderOgive(eerList){
+      const sorted=eerList.map(e=>e.eer||0).sort((a,b)=>a-b); const n=sorted.length;
+      const cumPerc=sorted.map((_,i)=>((i+1)/n)*100);
+      const ctx=document.getElementById('ogiveChart').getContext('2d');
+      if(ogiveChart)ogiveChart.destroy();
+      ogiveChart=new Chart(ctx,{type:'line',data:{labels:sorted,datasets:[{label:'Ogive (Cumulative %)',data:cumPerc,borderWidth:2,fill:false}]},
+        options:{scales:{x:{title:{display:true,text:'EER'}},y:{title:{display:true,text:'Cumulative %'}}}}});
+    }
+
+    function applyCutoff(){ renderEERSummary(); }
+
+    function downloadResults(){
+      if(!lastSavingsData.length||!lastEerList.length)return alert('Generate results first.');
+      const eerSheet=XLSX.utils.json_to_sheet(lastEerList.map(e=>({Facility:e.facility,EER:e.eer})));
+      const savingsSheet=XLSX.utils.json_to_sheet(lastSavingsData);
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,eerSheet,'Ogive_Data');
+      XLSX.utils.book_append_sheet(wb,savingsSheet,'Possible_Savings');
+      XLSX.writeFile(wb,'EER_Results.xlsx');
+    }
+
+    function resetAdmin(){
+      document.getElementById('tablesContainer').innerHTML='';
+      document.getElementById('summaryOutput').innerHTML='';
+      document.getElementById('regressionOutput').innerHTML='';
+      document.getElementById('eerSummary').innerHTML='';
+      document.getElementById('savingsTable').innerHTML='';
+      const ctx=document.getElementById('ogiveChart').getContext('2d'); if(ogiveChart)ogiveChart.destroy();
+    }
+  </script>
+</body>
+</html>
