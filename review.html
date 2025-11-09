@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Submission Review - EPRA</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <style>
+    body { 
+	background: #f8f9fa; 
+    }
+    .summary-box { 
+	background:white; 
+	padding:12px; 
+	border-radius:6px; 
+	box-shadow:0 0 6px rgba(0,0,0,0.05); 
+    }
+  </style>
+</head>
+<body class="p-3">
+  <div class="container-fluid">
+    <div id="reviewContainer" class="summary-box"></div>
+  </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const STORAGE_KEY = 'submittedFacilityData_v5';
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get('id');
+  if (!id) return alert('No submission selected.');
+
+  const getAllSubmissions = () => JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+  const saveAllSubmissions = (arr) => localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+  const formatNum = (n, d=2) => (isNaN(n) || n==null) ? 'N/A' : n.toFixed(d);
+
+  const sub = getAllSubmissions().find(s => s.id === id);
+  if (!sub) return alert('Submission not found.');
+
+  const results = sub.results || {};
+  const reviewContainer = document.getElementById('reviewContainer');
+
+  reviewContainer.innerHTML = `
+    <h4><b><u>${sub.facilityName}</u></b></h4>
+    <p><strong>Submitted By:</strong> ${sub.username}</p>
+    <p><strong>Status:</strong> ${sub.status}</p>
+    <p><strong>Submitted At:</strong> ${new Date(sub.submittedAt).toLocaleString()}</p>
+
+    <h5 class=" text-center mt-3">Submitted Data</h5>
+    <div class="table-responsive">
+      <table class="table table-bordered table-sm">
+        <thead><tr>${sub.headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>${sub.rows.map(r => `<tr>${r.map(c => `<td>${c ?? ''}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <h5 class="mt-3">Computed Results</h5>
+    <ul>
+      <li>Total Energy: ${formatNum(results.totalE)}</li>
+      <li>Total Production: ${formatNum(results.totalP)}</li>
+      <li>Actual EUI: ${formatNum(results.actualEUI,4)}</li>
+      <li>Predicted EUI: ${formatNum(results.predictedEUI,4)}</li>
+      <li>Actual EER: ${formatNum(results.actualEER,4)}</li>
+      <li>Possible Savings: ${formatNum(results.possibleSavings)}</li>
+    </ul>
+
+    <div class="mt-3">
+      <label class="form-label"><strong>Admin Comment:</strong></label>
+      <textarea id="adminComment" class="form-control mb-2" rows="2" placeholder="Add comment...">${sub.adminComment || ''}</textarea>
+      <button class="btn btn-success btn-sm" onclick="updateStatus('Approved')">Approve</button>
+      <button class="btn btn-danger btn-sm ms-2" onclick="updateStatus('Referred Back')">Refer Back</button>
+      <button class="btn btn-secondary btn-sm ms-2" onclick="window.location.href='admin.html'">Back</button>
+      <button class="btn btn-info btn-sm ms-2" onclick="downloadExcel()">Download Excel</button>
+    </div>
+  `;
+
+  window.updateStatus = (status) => {
+    const all = getAllSubmissions();
+    const s = all.find(x => x.id === id);
+    if (!s) return alert('Not found.');
+    s.status = status;
+    s.adminComment = document.getElementById('adminComment').value.trim();
+    s.reviewedAt = new Date().toISOString();
+    saveAllSubmissions(all);
+    alert(`Submission ${status}`);
+    window.location.href = 'admin.html';
+  };
+
+  window.downloadExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const wsRaw = XLSX.utils.aoa_to_sheet([sub.headers, ...sub.rows]);
+    XLSX.utils.book_append_sheet(wb, wsRaw, 'Raw Data');
+    const r = sub.results || {};
+    const wsRes = XLSX.utils.aoa_to_sheet([
+      ['Metric','Value'],
+      ['Total Energy', r.totalE],
+      ['Total Production', r.totalP],
+      ['Actual EUI', r.actualEUI],
+      ['Predicted EUI', r.predictedEUI],
+      ['Actual EER', r.actualEER],
+      ['Possible Savings', r.possibleSavings],
+      ['Status', sub.status],
+      ['Admin Comment', sub.adminComment || '']
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsRes, 'Results');
+    XLSX.writeFile(wb, `${sub.facilityName}_Reviewed.xlsx`);
+  };
+});
+</script>
+</body>
+</html>
