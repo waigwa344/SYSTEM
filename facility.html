@@ -25,22 +25,6 @@ body {
   width: 350px;
   margin-bottom: 2rem;
 }
-.form-control, .btn { font-size: 14px; }
-.forgot-pass {
-  font-size: 12px; 
-  cursor: pointer; 
-  text-decoration: underline; 
-  color: #007bff; 
-}
-.forgot-pass:hover { color: #0056b3; }
-.summary-box { 
-  background: white; 
-  padding:12px; 
-  border-radius:6px; 
-  box-shadow:0 0 6px rgba(0,0,0,0.05); 
-  margin-bottom: 1rem; 
-}
-table { font-size: 14px; }
 </style>
 </head>
 <body>
@@ -56,7 +40,6 @@ table { font-size: 14px; }
   </div>
   <button class="btn btn-primary w-100 mb-2" id="loginBtn">Login</button>
   <button class="btn btn-secondary w-100 mb-2" id="registerBtn">Register</button>
-  <button class="btn btn-danger w-100 mb-2 d-none" id="logoutBtn">Logout</button>
   <p class="forgot-pass" id="forgotPassBtn">Forgot Password?</p>
   <p id="loginMsg" class="text-danger mt-2"></p>
 </div>
@@ -74,10 +57,10 @@ table { font-size: 14px; }
   <!-- Tabs -->
   <ul class="nav nav-tabs" id="facilityTabs">
     <li class="nav-item">
-      <button class="nav-link active" id="data-input-tab" data-bs-toggle="tab" data-bs-target="#dataInputTab" type="button" role="tab">Data Input</button>
+      <button class="nav-link active" id="data-input-tab" data-bs-toggle="tab" data-bs-target="#dataInputTab" type="button">Data Input</button>
     </li>
     <li class="nav-item">
-      <button class="nav-link" id="data-analysis-tab" data-bs-toggle="tab" data-bs-target="#dataAnalysisTab" type="button" role="tab">Data Analysis</button>
+      <button class="nav-link" id="data-analysis-tab" data-bs-toggle="tab" data-bs-target="#dataAnalysisTab">Data Analysis</button>
     </li>
   </ul>
 
@@ -125,7 +108,7 @@ table { font-size: 14px; }
 
     <!-- Data Analysis Tab -->
     <div class="tab-pane fade" id="dataAnalysisTab">
-      <button class="btn btn-info btn-sm mb-2" id="computeBtn">Compute Regression & Results</button>
+      <button class="btn btn-info btn-sm mb-2" id="regressionbtn" disabled>Benchmark Model</button>
       <div id="facilityResults"></div>
     </div>
 
@@ -222,10 +205,13 @@ const remembered = JSON.parse(localStorage.getItem('rememberedUser')||'{}');
 
  const SECTOR = document.getElementById("SECTOR");
  const otherInput = document.getElementById("other-sector");
-  SECTOR.addEventListener("change", function() {
-    if(this.value === "other") {
+
+ otherInput.style.display = "none";
+ SECTOR.addEventListener("change", function() {
+    if(SECTOR.value === "other") {
         otherInput.style.display = "block";
     } else {
+	otherInput.value = "";
         otherInput.style.display = "none";
     }
   });
@@ -245,7 +231,7 @@ const processExcelBtn = document.getElementById('processExcelBtn');
       if(data.length<2)return alert('Invalid Excel.');
       const headers = data[0];
       facilityInputs.innerHTML = `<table class="table table-bordered table-sm">
-        ${data.map(r=>`<tr>${r.map(c=>`<td>${c??''}</td>`).join('')}</tr>`).join('')}
+        ${data.map(r=>`<tr>${r.map(c=>`<td contenteditable="true">${c??''}</td>`).join('')}</tr>`).join('')}
       </table>`;
       workingSubmission = { facilityName:name, headers, rows: data.slice(1) };
       submitFacilityBtn.disabled=false;
@@ -308,65 +294,7 @@ const submitFacilityBtn = document.getElementById('submitFacilityBtn');
     XLSX.writeFile(wb,`${sub.facilityName}_Submission.xlsx`);
   };
 
-  // Regression + EUI/EER computation
-  computeBtn.onclick = () => {
-    if(!workingSubmission) return alert('Process Excel first.');
-    const headers = workingSubmission.headers.map(h => (h||'').toString().toLowerCase());
-    const eIdx = headers.findIndex(h=>h.includes('energy'));
-    const pIdx = headers.findIndex(h=>h.includes('prod'));
-    if(eIdx<0 || pIdx<0) return alert('Excel must have Energy and Production columns.');
-
-    const E = workingSubmission.rows.map(r=>parseCell(r[eIdx]));
-    const P = workingSubmission.rows.map(r=>parseCell(r[pIdx]));
-    const n = P.length;
-    const meanP = P.reduce((a,b)=>a+b,0)/n;
-    const meanE = E.reduce((a,b)=>a+b,0)/n;
-    let numerator=0, denominator=0;
-    for(let i=0;i<n;i++){ numerator+=(P[i]-meanP)*(E[i]-meanE); denominator+=(P[i]-meanP)**2; }
-    const slope = denominator!==0 ? numerator/denominator : 0;
-    const intercept = meanE - slope*meanP;
-    const predictedEnergies = P.map(p=>intercept + slope*p);
-
-    const totalE = sumNonNull(E);
-    const totalP = sumNonNull(P);
-    const actualEUI = totalP>0 ? totalE/totalP : 0;
-    const predictedEUI = totalP>0 ? sumNonNull(predictedEnergies)/totalP : 0;
-    const newEER = predictedEUI>0 ? actualEUI/predictedEUI : 0;
-    const possibleSavings = totalP*(actualEUI - predictedEUI);
-
-    facilityResults.innerHTML = `
-      <div class="summary-box mt-3">
-        <h6>Regression Analysis</h6>
-        <p>Energy = ${slope.toFixed(4)} × Production + ${intercept.toFixed(4)}</p>
-        <canvas id="regressionChart" width="400" height="200"></canvas>
-        <h6 class="mt-3">Efficiency Metrics</h6>
-        <ul>
-          <li>Total Energy: ${totalE.toFixed(2)}</li>
-          <li>Total Production: ${totalP.toFixed(2)}</li>
-          <li>Actual EUI: ${actualEUI.toFixed(4)}</li>
-          <li>Predicted EUI: ${predictedEUI.toFixed(4)}</li>
-          <li>New EER: ${newEER.toFixed(4)}</li>
-          <li>Possible Savings: ${possibleSavings.toFixed(2)}</li>
-        </ul>
-      </div>
-    `;
-
-    const ctx = document.getElementById('regressionChart').getContext('2d');
-    new Chart(ctx, {
-      type:'scatter',
-      data:{
-        datasets:[
-          { label:'Actual Data', data:P.map((p,i)=>({x:p,y:E[i]})), backgroundColor:'blue' },
-          { label:'Regression Line', type:'line', data:P.map((p,i)=>({x:p,y:predictedEnergies[i]})), borderColor:'red', borderWidth:2, fill:false, tension:0 }
-        ]
-      },
-      options:{
-        responsive:true,
-        scales:{ x:{title:{display:true,text:'Production'}}, y:{title:{display:true,text:'Energy'}} }
-      }
-    });
-  };
-
+  
   const logged = sessionStorage.getItem('loggedUser');
   if(logged){ currentUser=logged; currentUserBadge.textContent=logged; authSection.classList.add('d-none'); facilitySection.classList.remove('d-none'); renderFacilitySubmissions(); }
 
